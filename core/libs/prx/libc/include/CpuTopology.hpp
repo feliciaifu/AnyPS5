@@ -1,6 +1,7 @@
 #ifndef CORE_LIBS_PRX_LIBC_INCLUDE_CPUTOPOLOGY_HPP
 #define CORE_LIBS_PRX_LIBC_INCLUDE_CPUTOPOLOGY_HPP
 
+#include <algorithm>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
@@ -26,6 +27,7 @@ struct Layout {
     std::uint64_t efficient = 0;
     std::uint64_t performant = 0;
     bool hybrid = false;
+    std::vector<std::uint64_t> cores;
 };
 
 #ifdef __linux__
@@ -93,6 +95,7 @@ inline const Layout& Get() {
                 const unsigned cls = entry->Processor.EfficiencyClass;
                 byClass[cls] |= static_cast<std::uint64_t>(entry->Processor.GroupMask[0].Mask);
                 seen[cls] = true;
+                result.cores.push_back(static_cast<std::uint64_t>(entry->Processor.GroupMask[0].Mask));
             }
             offset += entry->Size;
         }
@@ -114,6 +117,22 @@ inline const Layout& Get() {
         return result;
     }();
     return layout;
+}
+
+inline std::uint64_t WithoutReservedCores(std::uint64_t process, const std::vector<std::uint64_t>& cores, unsigned reserved, std::uint64_t preferred) {
+    std::vector<std::uint64_t> usable;
+    std::vector<std::uint64_t> candidates;
+    for (const auto core : cores) {
+        if ((core & process) == 0) continue;
+        usable.push_back(core & process);
+        if ((core & preferred) != 0) candidates.push_back(core & process);
+    }
+    if (reserved == 0 || usable.size() < static_cast<std::size_t>(reserved) + 3u) return 0;
+    if (candidates.size() < reserved) candidates = usable;
+    std::sort(candidates.begin(), candidates.end());
+    std::uint64_t mask = process;
+    for (unsigned index = 0; index < reserved; ++index) mask &= ~candidates[candidates.size() - 1u - index];
+    return mask;
 }
 
 // A hex mask from the environment, 0 when unset or empty.

@@ -4,6 +4,7 @@
 #include <filesystem>
 #include <fstream>
 #include <random>
+#include <vector>
 
 static void Require(bool value, const char* what) {
     if (value) return;
@@ -56,9 +57,35 @@ int main() {
         Require(threeTier.hybrid && threeTier.efficient == 0xffff && threeTier.performant == 0xff0000, "three-tier classes aggregate efficient");
     }
 
+    {
+        const std::vector<std::uint64_t> smt{0x3, 0xc, 0x30, 0xc0, 0x300, 0xc00};
+        Require(CpuTopology::WithoutReservedCores(0xfff, smt, 1, 0) == 0x3ff, "one core of a 6-core SMT host is kept for host threads");
+        Require(CpuTopology::WithoutReservedCores(0xfff, smt, 2, 0) == 0xff, "two cores are kept");
+        Require(CpuTopology::WithoutReservedCores(0xfff, smt, 0, 0) == 0, "no reservation leaves guest threads unrestricted");
+        Require(CpuTopology::WithoutReservedCores(0xfff, smt, 3, 0) == 0x3f, "three cores are kept when three remain");
+        Require(CpuTopology::WithoutReservedCores(0xfff, smt, 4, 0) == 0, "a reservation that leaves fewer than three cores is not applied");
+        const std::vector<std::uint64_t> unordered{0xc00, 0x3, 0x300, 0xc, 0xc0, 0x30};
+        Require(CpuTopology::WithoutReservedCores(0xfff, unordered, 1, 0) == 0x3ff, "the highest core is kept whatever the enumeration order");
+        Require(CpuTopology::WithoutReservedCores(0x3f, smt, 1, 0) == 0, "cores outside the process affinity do not count");
+        Require(CpuTopology::WithoutReservedCores(0xff, smt, 1, 0) == 0x3f, "the highest core inside the process affinity is kept");
+        Require(CpuTopology::WithoutReservedCores(0xfff, {}, 1, 0) == 0, "an unknown core layout leaves guest threads unrestricted");
+        const std::vector<std::uint64_t> single{0x1, 0x2, 0x4, 0x8};
+        Require(CpuTopology::WithoutReservedCores(0xf, single, 1, 0) == 0x7, "one logical cpu per core");
+        const std::vector<std::uint64_t> hybrid{0x3, 0xc, 0x30, 0xc0, 0x100, 0x200, 0x400, 0x800};
+        Require(CpuTopology::WithoutReservedCores(0xfff, hybrid, 1, 0xff) == 0xf3f, "a hybrid host keeps its highest performance core");
+        Require(CpuTopology::WithoutReservedCores(0xfff, hybrid, 2, 0xff) == 0xf0f, "a hybrid host keeps two performance cores");
+        Require(CpuTopology::WithoutReservedCores(0xfff, hybrid, 1, 0) == 0x7ff, "without a preference the highest core is kept");
+        Require(CpuTopology::WithoutReservedCores(0xf3f, hybrid, 1, 0xc0) == 0x73f, "a preference outside the process affinity falls back to the highest core");
+    }
+
     const auto& layout = CpuTopology::Get();
     Require(layout.process != 0, "process affinity read");
     Require(!layout.hybrid || (layout.performant & layout.efficient) == 0, "hybrid classes overlap");
+#ifdef _WIN32
+    std::uint64_t covered = 0;
+    for (const auto core : layout.cores) covered |= core;
+    Require((covered & layout.process) == layout.process, "every cpu of the process belongs to a listed core");
+#endif
     const std::uint64_t first = layout.process & (~layout.process + 1);
     Require(CpuTopology::Pin(nullptr, first) == first, "pin to one cpu of the process");
     cpu_set_t set;

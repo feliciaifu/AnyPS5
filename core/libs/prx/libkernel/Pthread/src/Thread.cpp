@@ -846,6 +846,36 @@ static void ApplyJobAffinity(PthreadPrivate& thread, void* handle) {
     });
     CpuTopology::PinTraced(thread.name.c_str(), handle, mask);
 }
+
+static unsigned GuestReservedCores() {
+    const char* text = std::getenv("APS5_GUEST_RESERVED_CORES");
+    if (text == nullptr || *text == '\0') return 1u;
+    char* end = nullptr;
+    const unsigned long value = std::strtoul(text, &end, 10);
+    if (*end != '\0' || value > 64u) throw std::runtime_error(std::string("APS5_GUEST_RESERVED_CORES=") + text + " is not a core count from 0 to 64");
+    return static_cast<unsigned>(value);
+}
+
+static std::uint64_t GuestThreadMask() {
+    static const std::uint64_t mask = [] {
+        const unsigned reserved = GuestReservedCores();
+        const auto& layout = CpuTopology::Get();
+        const auto guest = CpuTopology::WithoutReservedCores(layout.process, layout.cores, reserved, layout.hybrid ? layout.performant : 0);
+        if (guest != 0) std::fprintf(stderr, "[affinity] guest threads -> 0x%llx of 0x%llx, %u core(s) kept for host threads (APS5_GUEST_RESERVED_CORES)\n", static_cast<unsigned long long>(guest), static_cast<unsigned long long>(layout.process), reserved);
+        return guest;
+    }();
+    return mask;
+}
+
+static void ApplyGuestAffinity(const char* role) {
+    const auto mask = GuestThreadMask();
+    if (mask != 0) CpuTopology::PinTraced(role, nullptr, mask);
+}
+
+static const bool InitialThreadPlaced = [] {
+    ApplyGuestAffinity("initial thread");
+    return true;
+}();
 #endif
 
 struct NativeThreadArgs {
@@ -869,6 +899,7 @@ static unsigned __stdcall StartNativeThread(void* opaque) {
             throw std::runtime_error("Guest thread stack is not fully committed");
         self->threadId = std::this_thread::get_id();
         CurrentGuestState().current = self;
+        ApplyGuestAffinity("guest thread");
         if (!self->name.empty()) {
             const std::wstring description(self->name.begin(), self->name.end());
             SetThreadDescription(GetCurrentThread(), description.c_str());
